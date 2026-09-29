@@ -1,0 +1,49 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tick-microstructure-research"
+version = "0.1.0"
+description = "Live FollowSM tick-signal capture, calibration, hypothesis tests and a placebo-controlled quote-cancellation simulator"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.12"
+dependencies = [
+    "websockets>=13.0",
+    "httpx>=0.27",
+    "numpy>=1.26",
+    "matplotlib>=3.9",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=15"]
+dev = ["pytest>=8.0", "ruff>=0.6", "mypy>=1.10"]
+
+[project.scripts]
+tmr = "tick_microstructure.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tick_microstructure"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
+allowed-confusables = ["σ", "Δ", "−", "·", "±"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["pyarrow", "pyarrow.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
