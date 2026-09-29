@@ -14,13 +14,13 @@ from tick_microstructure.collector.common import FatalStreamError, Health
 from tick_microstructure.collector.followsm import run_followsm
 from tick_microstructure.collector.polymarket import PolymarketCollector
 from tick_microstructure.collector.storage import Store
-from tick_microstructure.config import Settings
+from tick_microstructure.config import POLYMARKET_COINS, Settings
 
 log = logging.getLogger("tick_microstructure.collector")
 STATUS_SECS = 30.0
 
 
-async def _status_loop(store: Store, healths: list[Health], pm: PolymarketCollector) -> None:
+async def _status_loop(store: Store, healths: list[Health], pms: list[PolymarketCollector]) -> None:
     started, previous = time.monotonic(), store.counts()
     while True:
         await asyncio.sleep(STATUS_SECS)
@@ -38,7 +38,7 @@ async def _status_loop(store: Store, healths: list[Health], pm: PolymarketCollec
             "up %.0fm | msg/s %s | markets %d | %s",
             (time.monotonic() - started) / 60,
             " ".join(f"{k}={v:.1f}" for k, v in sorted(rates.items())),
-            len(pm.markets),
+            sum(len(pm.markets) for pm in pms),
             problems or "no gaps",
         )
 
@@ -52,14 +52,31 @@ async def collect(settings: Settings, minutes: float | None, venues_only: bool) 
     store = Store(settings.data_dir)
     symbols = list(settings.symbols)
     h_bn = Health("binance", store)
-    h_pm = Health("polymarket", store)
-    pm = PolymarketCollector(settings.polymarket_ws, settings.gamma_api, symbols, store, h_pm)
+    # One Polymarket socket per coin: a single socket for every market overflows the server's
+    # per-connection send buffer (close 1013) during market rollovers.
+    pms = {
+        sym: PolymarketCollector(
+            settings.polymarket_ws,
+            settings.gamma_api,
+            [sym],
+            store,
+            Health(f"polymarket_{POLYMARKET_COINS[sym]}", store),
+        )
+        for sym in symbols
+        if sym in POLYMARKET_COINS
+    }
+
+    def on_confluence(record: dict[str, Any]) -> None:
+        pm = pms.get(record["sym"])
+        if pm is not None:
+            pm.on_confluence(record)
+
     jobs: list[Coroutine[Any, Any, None]] = [
         run_binance(settings.binance_ws, settings.binance_rest, symbols, store, h_bn),
-        pm.discovery_loop(),
-        pm.run(),
     ]
-    healths = [h_bn, h_pm]
+    for pm in pms.values():
+        jobs += [pm.discovery_loop(), pm.run()]
+    healths = [h_bn, *(pm.health for pm in pms.values())]
     if not venues_only:
         assert settings.followsm_api_key is not None
         for kind in ("toxicity", "confluence"):
@@ -73,10 +90,10 @@ async def collect(settings: Settings, minutes: float | None, venues_only: bool) 
                     symbols,
                     store,
                     health,
-                    on_confluence=pm.on_confluence if kind == "confluence" else None,
+                    on_confluence=on_confluence if kind == "confluence" else None,
                 )
             )
-    jobs.append(_status_loop(store, healths, pm))
+    jobs.append(_status_loop(store, healths, list(pms.values())))
     log.info(
         "Collecting %s into %s (%s)",
         ",".join(symbols),

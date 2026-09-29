@@ -32,6 +32,14 @@ PING_SECS = 9.0  # the server closes the socket after ~10 s without a text "PING
 STALE_SECS = 45.0
 DISCOVERY_SECS = 30.0
 PRUNE_AFTER_SECS = 120.0
+RECV_QUEUE = 4096  # frames buffered client-side before the server sees back-pressure
+# price_change frames (the bulk of the feed) are dropped on these markers before any decoding;
+# best_bid_ask carries the same top-of-book information.
+_KEEP_MARKERS = (b'"best_bid_ask"', b'"last_trade_price"', b'"book"')
+
+
+def is_relevant(raw: bytes) -> bool:
+    return any(marker in raw for marker in _KEEP_MARKERS)
 
 
 @dataclass
@@ -197,6 +205,17 @@ class PolymarketCollector:
             )
             self.health.event("subscribe", tokens=len(tokens))
 
+    async def _keepalive(self, ws: ClientConnection, last_msg: list[float]) -> None:
+        """Text PINGs for the server; closes a silent socket so the reader reconnects."""
+        while True:
+            await asyncio.sleep(PING_SECS)
+            if time.monotonic() - last_msg[0] > STALE_SECS:
+                self.health.event("stale", silent_secs=round(time.monotonic() - last_msg[0]))
+                await ws.close()
+                return
+            await ws.send("PING")
+            await self._flush_subscriptions()
+
     async def run(self) -> None:
         backoff = Backoff()
         down_since: float | None = None
@@ -205,8 +224,11 @@ class PolymarketCollector:
             if not tokens:
                 await asyncio.sleep(2)
                 continue
+            keepalive: asyncio.Task[None] | None = None
             try:
-                async with connect(self.ws_url, max_size=2**24, open_timeout=15, ping_interval=None) as ws:
+                async with connect(
+                    self.ws_url, max_size=2**24, max_queue=RECV_QUEUE, open_timeout=15, ping_interval=None
+                ) as ws:
                     await ws.send(
                         json.dumps({"assets_ids": tokens, "type": "market", "custom_feature_enabled": True})
                     )
@@ -216,20 +238,14 @@ class PolymarketCollector:
                         down_since = None
                     self.health.event("connect", tokens=len(tokens))
                     backoff.reset()
-                    last_ping = last_msg = time.monotonic()
+                    last_msg = [time.monotonic()]
+                    keepalive = asyncio.create_task(self._keepalive(ws, last_msg))
                     while True:
-                        if time.monotonic() - last_ping >= PING_SECS:
-                            await ws.send("PING")
-                            last_ping = time.monotonic()
-                        await self._flush_subscriptions()
-                        try:
-                            raw = await asyncio.wait_for(ws.recv(), timeout=PING_SECS / 3)
-                        except TimeoutError:
-                            if time.monotonic() - last_msg > STALE_SECS:
-                                raise
+                        raw = await ws.recv(decode=False)
+                        last_msg[0] = time.monotonic()
+                        if not is_relevant(raw):
                             continue
-                        last_msg = time.monotonic()
-                        for stream, record in parse_messages(str(raw), now_ms()):
+                        for stream, record in parse_messages(raw.decode(), now_ms()):
                             self.store.write(stream, record)
             except asyncio.CancelledError:
                 raise
@@ -245,3 +261,6 @@ class PolymarketCollector:
                 down_since = down_since or now_ms()
                 self.health.event("disconnect", error=f"{type(exc).__name__}: {exc}"[:200])
                 await asyncio.sleep(backoff.next())
+            finally:
+                if keepalive is not None:
+                    keepalive.cancel()

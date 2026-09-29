@@ -125,6 +125,32 @@ systemctl --user enable --now tmr-collect
 loginctl enable-linger "$USER"     # keep it running after logout
 ```
 
+If `systemctl --user` fails with *"Failed to connect to bus"*, there is no user session bus (common over SSH). Use a system unit instead. It runs as your user but needs `sudo` to install:
+
+```ini
+# /etc/systemd/system/tmr-collect.service
+[Unit]
+Description=tick-microstructure-research collector
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ubuntu
+WorkingDirectory=/home/ubuntu/tick-microstructure-research
+ExecStart=/home/ubuntu/tick-microstructure-research/.venv/bin/tmr collect
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable --now tmr-collect
+systemctl status tmr-collect                  # state
+journalctl -u tmr-collect -f                  # live log; a status line every 30 s
+```
+
 Restarts are safe. The collector appends to the current hour, compresses any hours left open by a crash, and the gap between runs is logged and excluded.
 
 ### Configuration (`.env`)

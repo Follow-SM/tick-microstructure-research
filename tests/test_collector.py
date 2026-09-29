@@ -9,7 +9,7 @@ from pathlib import Path
 
 from tick_microstructure.collector.binance import TradeSequencer, trade_record
 from tick_microstructure.collector.followsm import flatten_confluence, flatten_toxicity
-from tick_microstructure.collector.polymarket import parse_messages
+from tick_microstructure.collector.polymarket import is_relevant, parse_messages
 from tick_microstructure.collector.storage import HOUR_MS, JsonlWriter, Store, iter_records
 
 H0 = 1_790_690_400_000.0  # an hour boundary
@@ -158,3 +158,13 @@ def test_parse_polymarket_messages() -> None:
     assert out[0][1] == {"rt": 10.0, "ts": 5, "tok": "t", "b": 0.41, "a": 0.43}
     assert out[2][1]["b"] == 0.41 and out[2][1]["a"] == 0.44
     assert parse_messages("PONG", 1.0) == []
+
+
+def test_prefilter_drops_price_change_frames_before_parsing() -> None:
+    price_change = b'{"market":"0x1","price_changes":[{"asset_id":"t","best_bid":"0.4","best_ask":"0.5"}],'
+    price_change += b'"event_type":"price_change","timestamp":"1"}'
+    assert not is_relevant(price_change)
+    assert not is_relevant(b"PONG")
+    assert is_relevant(b'{"event_type":"best_bid_ask","asset_id":"t"}')
+    assert is_relevant(b'[{"event_type":"book","asset_id":"t","bids":[],"asks":[]}]')
+    assert is_relevant(b'{"event_type": "last_trade_price", "price": "0.4"}')
