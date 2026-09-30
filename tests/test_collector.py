@@ -7,12 +7,68 @@ import json
 import time
 from pathlib import Path
 
+import numpy as np
+
+from tick_microstructure.analytics.data import find_book_model_switch, load
 from tick_microstructure.collector.binance import TradeSequencer, trade_record
-from tick_microstructure.collector.followsm import flatten_confluence, flatten_toxicity
+from tick_microstructure.collector.common import Health
+from tick_microstructure.collector.followsm import check_seq, flatten_confluence, flatten_toxicity
 from tick_microstructure.collector.polymarket import is_relevant, parse_messages
 from tick_microstructure.collector.storage import HOUR_MS, JsonlWriter, Store, iter_records
 
 H0 = 1_790_690_400_000.0  # an hour boundary
+
+
+def _tox_item(**extra: object) -> dict[str, object]:
+    band = {"bid_notional": 2e7, "ask_notional": 1e7, "imbalance_ratio": 0.67}
+    return {
+        "symbol": "BTCUSDT",
+        "timestamp": 1790690400.5,
+        "price": 84000.0,
+        "vpin": 0.4,
+        "vpin_percentile": 0.5,
+        "ob_toxicity_1pct": 0.5,
+        "ob_imbalance_l1": 0.4,
+        "depth_bands": {"1.0%": band},
+        "volume_z_score": 1.2,
+        "natr_15m": 0.002,
+        "taker_buy_ratio": 0.45,
+        "is_toxic_alert": False,
+        **extra,
+    }
+
+
+def test_flatten_toxicity_keeps_local_book_fields_when_present() -> None:
+    old = flatten_toxicity(_tox_item(), 1.0)
+    assert not {"seq", "cov", "oli"} & set(old)
+    new = flatten_toxicity(_tox_item(seq=42, depth_coverage_pct=0.0093, ob_log_imbalance_1pct=-0.69), 1.0)
+    assert (new["seq"], new["cov"], new["oli"]) == (42, 0.0093, -0.69)
+
+
+def test_seq_jumps_and_restarts_are_logged_as_gaps(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    health = Health("followsm_toxicity", store)
+    last: dict[str, tuple[int, float]] = {}
+    for seq, rt in ((1, H0), (2, H0 + 250), (5, H0 + 500), (1, H0 + 60_000)):
+        check_seq(health, "followsm_toxicity", last, {"sym": "BTCUSDT", "seq": seq, "rt": rt})
+    store.close()
+    gaps = [r for r in iter_records(tmp_path, "events") if r["kind"] == "gap"]
+    assert [(g["cause"], g.get("missed")) for g in gaps] == [("seq", 2), ("backend_restart", None)]
+    assert gaps[0]["from_rt"] == H0 + 250 and gaps[0]["to_rt"] == H0 + 500
+
+
+def test_book_model_switch_is_the_first_frame_with_seq(tmp_path: Path) -> None:
+    store = Store(tmp_path)
+    for i in range(4):
+        extra = {"seq": i, "depth_coverage_pct": 0.009} if i >= 2 else {}
+        store.write("followsm_toxicity", flatten_toxicity(_tox_item(**extra), H0 + i * 1000))
+    store.close()
+    assert find_book_model_switch(tmp_path) == H0 + 2000
+    ds = load(tmp_path)
+    assert ds.book_model_switch_ms == H0 + 2000
+    tox = ds.toxicity["BTCUSDT"]
+    assert np.isnan(tox.seq[:2]).all() and tox.seq[2:].tolist() == [2.0, 3.0]
+    assert tox.coverage[3] == 0.009
 
 
 def test_writer_rotates_hourly_and_gzips_closed_hours(tmp_path: Path) -> None:

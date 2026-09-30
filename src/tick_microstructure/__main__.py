@@ -14,7 +14,7 @@ from typing import Any
 import numpy as np
 
 from tick_microstructure.analytics.calibration import calibrate
-from tick_microstructure.analytics.data import load
+from tick_microstructure.analytics.data import find_book_model_switch, load
 from tick_microstructure.analytics.leadlag import lead_lag
 from tick_microstructure.collector.common import FatalStreamError
 from tick_microstructure.collector.export import export_parquet
@@ -36,14 +36,23 @@ def _json_default(value: Any) -> Any:
     raise TypeError(type(value).__name__)
 
 
-def analyze(hours: float | None, chart_symbol: str) -> Path:
+def analyze(hours: float | None, chart_symbol: str, book_model: str = "auto") -> Path:
     settings = load_settings()
     end = time.time() * 1000 if hours else None
     start = end - hours * 3_600_000 if end is not None and hours else None
+    switch = find_book_model_switch(settings.data_dir)
+    if switch is not None and book_model in ("auto", "new"):
+        start = max(start or switch, switch)
+    elif switch is not None and book_model == "old":
+        end = min(end or switch, switch)
+    elif switch is None and book_model == "new":
+        raise SystemExit("No frames from the local-order-book backend in this capture yet.")
     t0 = time.monotonic()
     ds = load(settings.data_dir, start, end)
     log.info("Loaded %.2f h in %.1fs", ds.hours, time.monotonic() - t0)
+    mixed = switch is not None and ds.start_ms < switch < ds.end_ms
     results = {
+        "book_model": {"switch_ms": switch, "mode": book_model, "mixed": mixed},
         "calibration": calibrate(ds),
         "leadlag": lead_lag(ds),
         "hypotheses": {
@@ -71,6 +80,13 @@ def main() -> None:
     c.add_argument("--venues-only", action="store_true", help="skip FollowSM (no key needed)")
     a = sub.add_parser("analyze", help="calibration, lead-lag, hypotheses, simulation, report")
     a.add_argument("--hours", type=float, default=None, help="only the last N hours (default: everything)")
+    a.add_argument(
+        "--book-model",
+        choices=("auto", "new", "old", "all"),
+        default="auto",
+        help="FollowSM depth metrics changed meaning when the backend moved to a local order book: "
+        "auto/new = only data after that switch (if seen), old = only before, all = mix (flagged)",
+    )
     a.add_argument("--chart-symbol", default="BTCUSDT")
     e = sub.add_parser("export", help="convert captured JSONL to Parquet")
     e.add_argument("--out", type=Path, default=Path("parquet"))
@@ -87,7 +103,7 @@ def main() -> None:
         except KeyboardInterrupt:
             log.info("Interrupted.")
     elif args.cmd == "analyze":
-        analyze(args.hours, args.chart_symbol)
+        analyze(args.hours, args.chart_symbol, args.book_model)
     else:
         written = export_parquet(load_settings().data_dir, args.out)
         log.info("Parquet: %s", written)

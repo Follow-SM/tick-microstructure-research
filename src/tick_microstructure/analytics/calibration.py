@@ -63,6 +63,7 @@ def calibrate(ds: Dataset) -> dict[str, Any]:
                 row["share_obt_gt_2"] = (
                     float((_slice(tox.t, tox.obt, lo, hi) > 2.0).mean()) if vp.size else None
                 )
+                row["depth_coverage"] = quantiles(_slice(tox.t, tox.coverage, lo, hi))
             if flow is not None and len(flow.t):
                 row["taker_notional_per_sec"] = quantiles(_slice(flow.t, flow.total, lo, hi))
                 row["taker_flow_z"] = quantiles(_slice(flow.t, flow.z, lo, hi))

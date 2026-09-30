@@ -42,6 +42,10 @@ def flatten_toxicity(item: dict[str, Any], rt: float) -> dict[str, Any]:
         "tbr": item["taker_buy_ratio"],
         "tox": item["is_toxic_alert"],
     }
+    # Fields added with the local-order-book backend; absent from older frames.
+    for key, tag in (("seq", "seq"), ("depth_coverage_pct", "cov"), ("ob_log_imbalance_1pct", "oli")):
+        if key in item:
+            record[tag] = item[key]
     bands = item.get("depth_bands") or {}
     for key, tag in BANDS:
         band = bands.get(key)
@@ -83,6 +87,29 @@ def flatten_confluence(item: dict[str, Any], rt: float) -> dict[str, Any]:
     }
 
 
+def check_seq(
+    health: Health, stream: str, last_seq: dict[str, tuple[int, float]], record: dict[str, Any]
+) -> None:
+    """A per-symbol `seq` jump means frames were missed; a drop means the backend restarted."""
+    sym, seq, rt = record["sym"], int(record["seq"]), record["rt"]
+    previous = last_seq.get(sym)
+    if previous is not None:
+        prev_seq, prev_rt = previous
+        if seq > prev_seq + 1:
+            health.event(
+                "gap",
+                stream=stream,
+                sym=sym,
+                from_rt=prev_rt,
+                to_rt=rt,
+                cause="seq",
+                missed=seq - prev_seq - 1,
+            )
+        elif seq < prev_seq:
+            health.event("gap", stream=stream, sym=sym, from_rt=prev_rt, to_rt=rt, cause="backend_restart")
+    last_seq[sym] = (seq, rt)
+
+
 def _rejected(exc: BaseException) -> bool:
     if isinstance(exc, InvalidStatus):
         return exc.response.status_code in (401, 403)
@@ -108,6 +135,7 @@ async def run_followsm(
     backoff = Backoff()
     last_frame: float | None = None
     down_since: float | None = None
+    last_seq: dict[str, tuple[int, float]] = {}  # symbol -> (seq, receive time)
     while True:
         try:
             async with connect(f"{base_url}/{kind}?api_key={api_key}", max_size=2**24, open_timeout=15) as ws:
@@ -129,6 +157,8 @@ async def run_followsm(
                         if item.get("symbol") in wanted:
                             record = flatten(item, rt)
                             store.write(stream, record)
+                            if "seq" in record:
+                                check_seq(health, stream, last_seq, record)
                             if on_confluence is not None:
                                 on_confluence(record)
         except asyncio.CancelledError:

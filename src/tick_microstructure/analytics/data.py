@@ -109,6 +109,9 @@ class Toxicity:
     taker_buy_ratio: F
     bid_1pct: F
     ask_1pct: F
+    seq: F  # NaN on frames from the top-10-level backend (before the local order book)
+    coverage: F  # depth_coverage_pct; NaN when absent or the whole book is known
+    log_imbalance: F  # ob_log_imbalance_1pct
 
 
 @dataclass
@@ -206,6 +209,9 @@ class Dataset:
     markets: dict[str, MarketInfo]
     gaps: dict[str, GapMask]  # "followsm" | "binance" | "polymarket" | "all"
     event_counts: dict[str, int]
+    # Receive time of the first frame from the local-order-book backend. Depth metrics mean
+    # something different before it (top 10 levels), so analyses must not mix the two.
+    book_model_switch_ms: float | None = None
 
     def token_market(self) -> dict[str, tuple[MarketInfo, int]]:
         """token id -> (market, outcome index) with index 0 = YES / Up."""
@@ -214,6 +220,14 @@ class Dataset:
     @property
     def hours(self) -> float:
         return (self.end_ms - self.start_ms) / 3_600_000
+
+
+def find_book_model_switch(root: Path) -> float | None:
+    """Receive time of the first toxicity frame carrying `seq` (local-order-book backend)."""
+    for r in iter_records(root, "followsm_toxicity"):
+        if "seq" in r:
+            return float(r["rt"])
+    return None
 
 
 def load(root: Path, start_ms: float | None = None, end_ms: float | None = None) -> Dataset:
@@ -232,11 +246,12 @@ def load(root: Path, start_ms: float | None = None, end_ms: float | None = None)
         book_cols[r["sym"]].add(r["rt"], r["b"], r["a"], r["B"], r["A"])
     book = {s: Book(*_sorted_by(*c.arrays())) for s, c in book_cols.items()}
 
-    tox_keys = ("rt", "ts", "px", "vpin", "vp", "obt", "l1", "vz", "tbr", "b1", "a1")
+    tox_keys = ("rt", "ts", "px", "vpin", "vp", "obt", "l1", "vz", "tbr", "b1", "a1", "seq", "cov", "oli")
     tox_cols: dict[str, _Columns] = defaultdict(lambda: _Columns(len(tox_keys)))
     for r in iter_records(root, "followsm_toxicity", start_ms, end_ms):
         tox_cols[r["sym"]].add(*(np.nan if r.get(k) is None else float(r[k]) for k in tox_keys))
     toxicity = {s: Toxicity(*_sorted_by(*c.arrays())) for s, c in tox_cols.items()}
+    switch = [float(t.t[np.isfinite(t.seq)][0]) for t in toxicity.values() if np.isfinite(t.seq).any()]
 
     confluence = _load_confluence(root, start_ms, end_ms)
 
@@ -290,6 +305,7 @@ def load(root: Path, start_ms: float | None = None, end_ms: float | None = None)
         markets=markets,
         gaps=gaps,
         event_counts=dict(event_counts),
+        book_model_switch_ms=min(switch) if switch else None,
     )
 
 

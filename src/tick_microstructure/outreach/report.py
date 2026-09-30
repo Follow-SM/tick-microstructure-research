@@ -57,6 +57,11 @@ def sufficiency(results: dict[str, Any]) -> tuple[bool, str]:
     hours = cal["span_hours"]
     if not any(s["delivery"].get("arrival_lag_ms") for s in cal["symbols"].values()):
         return False, "No FollowSM frames in this capture: only the venue ground truth was recorded."
+    if results.get("book_model", {}).get("mixed"):
+        return False, (
+            "This window spans the backend's switch from top-10-level depth to a full local order book, "
+            "so depth metrics mean two different things. Re-run with --book-model new (or old)."
+        )
     if hours < MIN_HOURS:
         return False, (
             f"This capture spans {hours:.1f} h. Thresholds and effect sizes need at least "
@@ -65,12 +70,22 @@ def sufficiency(results: dict[str, Any]) -> tuple[bool, str]:
     return True, f"Capture spans {hours / 24:.1f} days."
 
 
-def _capture(cal: dict[str, Any]) -> list[str]:
+def _book_model(bm: dict[str, Any]) -> str:
+    switch = bm.get("switch_ms")
+    if switch is None:
+        return "- Depth model: top-10-level backend only (no local-order-book frames seen yet)."
+    stamp = datetime.fromtimestamp(switch / 1000, UTC).strftime("%Y-%m-%d %H:%M UTC")
+    scope = "mixed (both models)" if bm.get("mixed") else f"--book-model {bm.get('mode', 'auto')}"
+    return f"- Depth model: backend switched to a full local order book at {stamp}; this report: {scope}."
+
+
+def _capture(cal: dict[str, Any], book_model: dict[str, Any]) -> list[str]:
     gaps = ", ".join(f"{k} {v * 60:.1f} min" for k, v in cal["gap_hours"].items())
     lines = [
         "## Capture",
         "",
         f"- Span: {cal['span_hours']:.2f} h. Gap time: {gaps}.",
+        _book_model(book_model),
         f"- Collector events: {cal['events']}",
         "",
         *_header(
@@ -288,7 +303,7 @@ def render(results: dict[str, Any], charts: list[str]) -> str:
         "",
         f"> **Data sufficiency: {'OK' if ok else 'INSUFFICIENT'}.** {verdict}",
         "",
-        *_capture(results["calibration"]),
+        *_capture(results["calibration"], results.get("book_model", {})),
         *_h1(results["hypotheses"]["h1"]),
         *_h2(results["hypotheses"]["h2"]),
         *_h3(results["hypotheses"]["h3"]),
