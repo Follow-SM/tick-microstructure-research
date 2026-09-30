@@ -43,7 +43,12 @@ def flatten_toxicity(item: dict[str, Any], rt: float) -> dict[str, Any]:
         "tox": item["is_toxic_alert"],
     }
     # Fields added with the local-order-book backend; absent from older frames.
-    for key, tag in (("seq", "seq"), ("depth_coverage_pct", "cov"), ("ob_log_imbalance_1pct", "oli")):
+    for key, tag in (
+        ("seq", "seq"),
+        ("depth_coverage_pct", "cov"),
+        ("ob_log_imbalance_1pct", "oli"),
+        ("ob_imbalance_percentile", "obp"),
+    ):
         if key in item:
             record[tag] = item[key]
     bands = item.get("depth_bands") or {}

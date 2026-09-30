@@ -112,6 +112,7 @@ class Toxicity:
     seq: F  # NaN on frames from the top-10-level backend (before the local order book)
     coverage: F  # depth_coverage_pct; NaN when absent or the whole book is known
     log_imbalance: F  # ob_log_imbalance_1pct
+    imbalance_pct: F  # ob_imbalance_percentile; NaN while warming up or before it existed
 
 
 @dataclass
@@ -246,7 +247,23 @@ def load(root: Path, start_ms: float | None = None, end_ms: float | None = None)
         book_cols[r["sym"]].add(r["rt"], r["b"], r["a"], r["B"], r["A"])
     book = {s: Book(*_sorted_by(*c.arrays())) for s, c in book_cols.items()}
 
-    tox_keys = ("rt", "ts", "px", "vpin", "vp", "obt", "l1", "vz", "tbr", "b1", "a1", "seq", "cov", "oli")
+    tox_keys = (
+        "rt",
+        "ts",
+        "px",
+        "vpin",
+        "vp",
+        "obt",
+        "l1",
+        "vz",
+        "tbr",
+        "b1",
+        "a1",
+        "seq",
+        "cov",
+        "oli",
+        "obp",
+    )
     tox_cols: dict[str, _Columns] = defaultdict(lambda: _Columns(len(tox_keys)))
     for r in iter_records(root, "followsm_toxicity", start_ms, end_ms):
         tox_cols[r["sym"]].add(*(np.nan if r.get(k) is None else float(r[k]) for k in tox_keys))

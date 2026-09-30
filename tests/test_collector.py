@@ -41,8 +41,13 @@ def _tox_item(**extra: object) -> dict[str, object]:
 def test_flatten_toxicity_keeps_local_book_fields_when_present() -> None:
     old = flatten_toxicity(_tox_item(), 1.0)
     assert not {"seq", "cov", "oli"} & set(old)
-    new = flatten_toxicity(_tox_item(seq=42, depth_coverage_pct=0.0093, ob_log_imbalance_1pct=-0.69), 1.0)
-    assert (new["seq"], new["cov"], new["oli"]) == (42, 0.0093, -0.69)
+    new = flatten_toxicity(
+        _tox_item(
+            seq=42, depth_coverage_pct=0.0093, ob_log_imbalance_1pct=-0.69, ob_imbalance_percentile=0.2
+        ),
+        1.0,
+    )
+    assert (new["seq"], new["cov"], new["oli"], new["obp"]) == (42, 0.0093, -0.69, 0.2)
 
 
 def test_seq_jumps_and_restarts_are_logged_as_gaps(tmp_path: Path) -> None:

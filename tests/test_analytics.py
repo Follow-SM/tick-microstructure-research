@@ -129,7 +129,7 @@ def _synthetic(signal_leads_moves: bool) -> Dataset:
         obt[(ft >= s) & (ft < s + 3_000)] = 3.0
     nan = np.full(ft.size, np.nan)
     tox = Toxicity(
-        ft, ft - 40, np.full(ft.size, 84_000.0), nan, nan, obt, nan, nan, nan, nan, nan, nan, nan, nan
+        ft, ft - 40, np.full(ft.size, 84_000.0), nan, nan, obt, nan, nan, nan, nan, nan, nan, nan, nan, nan
     )
     market = MarketInfo(
         "btc-updown-15m-x", "BTCUSDT", "updown_15m", ["up", "down"], start / 1000, end / 1000 + 600
