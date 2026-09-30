@@ -435,3 +435,124 @@ def render_tradfi(results: dict[str, Any], charts: list[str]) -> str:
         lines += ["", "## Charts", "", *(f"![{c}](assets/{c})" for c in charts)]
     lines += ["", "## Assumptions", "", *(f"- {a}" for a in results["assumptions"]), ""]
     return "\n".join(lines)
+
+
+def render_polymarket(results: dict[str, Any], charts: list[str]) -> str:
+    """Markdown report for `tmr tradfi pm-analyze`, numbers copied from results_polymarket.json."""
+    generated = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    lines = [
+        "# Polymarket equity Up/Down markets vs Binance TradFi perps",
+        "",
+        f"*Generated {generated} from `research/results_polymarket.json`: "
+        f"{results['n_nights']} market-nights.*",
+        "",
+        "## 1. Market size",
+        "",
+        *_header("symbol", "nights", "median taker USD / night", "off-hours share of PM volume"),
+    ]
+    for sym, r in results["symbols"].items():
+        lines.append(
+            _row(
+                sym,
+                str(r["nights"]),
+                _usd(r["median_night_taker_usd"]),
+                _pct(r["offhours_share_of_pm_volume"]),
+            )
+        )
+    lines += ["", "## 2. Lead-lag (pooled; positive lag = Polymarket moves first)", ""]
+    lines += _header("resolution", "session", "minutes", "peak lag", "corr -1", "corr 0", "corr +1")
+    for step, per in results["leadlag_pooled"].items():
+        for sess, o in per.items():
+            cc = o["xcorr"]
+            lines.append(
+                _row(
+                    step,
+                    sess,
+                    f"{o['minutes']:,}",
+                    str(o["peak_lag"]),
+                    *(_num(cc.get(k), ".3f") for k in ("-1", "0", "1")),
+                )
+            )
+    lines += ["", "## 3. Calibration by session (perp-implied vs Polymarket probability)", ""]
+    lines += _header(
+        "session", "n", "Brier perp", "Brier PM", "PM - perp 95% CI", "perp side right when |Δ| > 5¢"
+    )
+    for sess, o in results["session_calibration"].items():
+        lo, hi = o["diff_pm_minus_perp_ci95"]
+        lines.append(
+            _row(
+                sess,
+                f"{o['n']:,}",
+                _num(o["brier_perp"], ".4f"),
+                _num(o["brier_pm"], ".4f"),
+                f"[{lo:+.4f}, {hi:+.4f}]",
+                _ci(o["perp_right_when_disagree"]),
+            )
+        )
+    lines += ["", "### At fixed anchors (ET)", ""]
+    lines += _header("anchor", "n", "Brier perp", "Brier PM", "PM - perp 95% CI")
+    for anchor, o in results["brier"].items():
+        lo, hi = o["diff_ci95"]
+        lines.append(
+            _row(
+                anchor,
+                str(o["n"]),
+                _num(o["brier_perp"], ".4f"),
+                _num(o["brier_pm"], ".4f"),
+                f"[{lo:+.4f}, {hi:+.4f}]",
+            )
+        )
+    ev = results["events"]
+    lines += ["", "## 4. Event curves", "", f"Triggers: {ev['triggers']}", ""]
+    lines += _header(
+        "curve", "n", "unit", "30 min before", "+5", "+60", "+60 95% CI", "placebo seeds ≥ actual"
+    )
+    for name, o in ev.items():
+        if "->" not in name:
+            continue
+        pl = o.get("placebo_post_60")
+        ci = o.get("post_60_ci")
+        lines.append(
+            _row(
+                name,
+                str(o["n"]),
+                o["unit"],
+                _num(o.get("pre_-30_to_0"), ".4f"),
+                _num(o.get("post_5"), ".4f"),
+                _num(o.get("post_60"), ".4f"),
+                "n/a" if ci is None else f"[{ci[0]:.4f}, {ci[1]:.4f}]",
+                "n/a" if not pl else _pct(pl["share_at_least_actual"], 0),
+            )
+        )
+    gap = results["gap"]
+    lines += [
+        "",
+        "## 5. Does off-hours Polymarket predict the unpriced gap or the rest of the day?",
+        "",
+        f"{gap['n_tests']} tests; Bonferroni threshold p < {gap['bonferroni_alpha']:.4f}.",
+        "",
+        *_header("signal", "target", "direction hit rate", "rank correlation"),
+    ]
+    for name, per in gap["direction"].items():
+        for target, r in per.items():
+            lines.append(_row(name, target, _ci(r), _test(r)))
+    lines += ["", *_header("magnitude signal", "target", "rank correlation")]
+    for name, per in gap["magnitude"].items():
+        for target, r in per.items():
+            lines.append(_row(name, target, _test(r)))
+    er = results["earnings"]
+    if er.get("n"):
+        lines += [
+            "",
+            "## 6. Earnings EPS-beat markets (case studies)",
+            "",
+            f"{er['n']} releases. Beat rate {_ci(er['beat_rate'])}; Polymarket on the right side 1 h before "
+            f"the move {_ci(er['pm_right_side_1h_before'])}; perp reaction agreed with the beat "
+            f"{_ci(er['reaction_agrees_with_beat'])}. Median minutes for Polymarket to reach 90% on the "
+            f"outcome: {er['median_pm_minutes_to_90pct']}; for the perp to reach half its 60-minute "
+            f"reaction: {er['median_perp_minutes_to_half_reaction']}.",
+        ]
+    if charts:
+        lines += ["", "## Charts", "", *(f"![{c}](assets/{c})" for c in charts)]
+    lines += ["", "## Assumptions", "", *(f"- {a}" for a in results["assumptions"]), ""]
+    return "\n".join(lines)

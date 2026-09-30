@@ -1,4 +1,4 @@
-"""CLI: `tmr collect | analyze | export | tradfi fetch | tradfi analyze`."""
+"""CLI: `tmr collect | analyze | export | tradfi fetch | analyze | pm-fetch | pm-analyze`."""
 
 from __future__ import annotations
 
@@ -22,10 +22,12 @@ from tick_microstructure.collector.export import export_parquet
 from tick_microstructure.collector.run import collect
 from tick_microstructure.config import load_settings
 from tick_microstructure.outreach.charts import render_all
-from tick_microstructure.outreach.report import render, render_tradfi
+from tick_microstructure.outreach.polymarket_charts import render_polymarket_charts
+from tick_microstructure.outreach.report import render, render_polymarket, render_tradfi
 from tick_microstructure.outreach.tradfi_charts import render_tradfi_charts
-from tick_microstructure.research import tradfi_study
+from tick_microstructure.research import polymarket_study, tradfi_study
 from tick_microstructure.research.data.fetch import EQUITY_SYMBOLS, fetch_all
+from tick_microstructure.research.data.polymarket import fetch_polymarket
 from tick_microstructure.research.data.store import TradfiStore
 from tick_microstructure.research.hypotheses import h1_depth_depletion, h2_sweep_cascade, h3_trigger_detection
 from tick_microstructure.simulation.engine import simulate
@@ -89,6 +91,18 @@ def analyze_tradfi(store: TradfiStore, symbols: tuple[str, ...], out: Path) -> P
     return report
 
 
+def analyze_polymarket(store: TradfiStore, symbols: tuple[str, ...], out: Path) -> Path:
+    t0 = time.monotonic()
+    results, chart_data = polymarket_study.run(store, symbols)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "results_polymarket.json").write_text(json.dumps(results, indent=1, default=_json_default))
+    charts = render_polymarket_charts(results, chart_data, out / "assets")
+    report = out / "POLYMARKET_REPORT.md"
+    report.write_text(render_polymarket(results, [c.name for c in charts]))
+    log.info("Wrote %s and %d charts in %.1fs", report, len(charts), time.monotonic() - t0)
+    return report
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="tmr", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -108,7 +122,7 @@ def main() -> None:
     e = sub.add_parser("export", help="convert captured JSONL to Parquet")
     e.add_argument("--out", type=Path, default=Path("parquet"))
     t = sub.add_parser("tradfi", help="tokenized-equity perps vs US sessions (historical, Parquet)")
-    t.add_argument("action", choices=("fetch", "analyze"))
+    t.add_argument("action", choices=("fetch", "analyze", "pm-fetch", "pm-analyze"))
     t.add_argument("--root", type=Path, default=None, help="Parquet root (default: <TMR_DATA_DIR>/tradfi)")
     t.add_argument("--symbols", default=",".join(EQUITY_SYMBOLS))
     t.add_argument("--start", type=date.fromisoformat, default=date(2026, 1, 28))
@@ -138,6 +152,10 @@ def main() -> None:
             log.info("Downloaded: %s", report.downloaded)
             for kind, missing in report.missing.items():
                 log.info("Missing %s (%d): %s", kind, len(missing), ", ".join(missing[:10]))
+        elif args.action == "pm-fetch":
+            log.info("Polymarket: %s", asyncio.run(fetch_polymarket(store, symbols, args.start, args.end)))
+        elif args.action == "pm-analyze":
+            analyze_polymarket(store, symbols, args.out)
         else:
             analyze_tradfi(store, symbols, args.out)
     else:
