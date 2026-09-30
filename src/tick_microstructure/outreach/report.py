@@ -240,6 +240,40 @@ def _h3(h3: dict[str, Any]) -> list[str]:
     return lines
 
 
+def _trigger_table(res: dict[str, Any]) -> list[str]:
+    lines = _header(
+        "Trigger",
+        "active",
+        "fills avoided",
+        "slippage avoided",
+        "spread missed",
+        "net value",
+        "placebo net p50",
+        "placebo ≥ actual",
+    )
+    for name, r in res["triggers"].items():
+        a = r["actual"]
+        lines.append(
+            _row(
+                name,
+                _pct(r["active_share"]),
+                f"{a['fills_avoided']:.0f}/{a['fills']:.0f}",
+                _usd(a["slippage_avoided"]),
+                _usd(a["spread_missed"]),
+                _usd(a["net_value"]),
+                f"${_num(r['placebo_net_value'].get('p50'))}",
+                _pct(r["placebo_share_at_least_as_good"], 0),
+            )
+        )
+    composite = res["triggers"].get("composite")
+    if composite:
+        sens = ", ".join(
+            f"{k} ms: ${v['net_value']:,.2f}" for k, v in composite["by_cancel_latency_ms"].items()
+        )
+        lines += ["", f"Composite net value by OMS cancel latency: {sens}."]
+    return lines
+
+
 def _sim(sim: dict[str, Any]) -> list[str]:
     lines = [
         f"## Simulation: static quoting vs circuit breaker ({sim['primary_markout_s']} s markout, "
@@ -248,47 +282,41 @@ def _sim(sim: dict[str, Any]) -> list[str]:
         "Fills are an upper bound (queue position ignored). Net value = slippage avoided − spread capture "
         "missed. Placebo ≥ actual = share of shifted placebos that did at least as well.",
         "",
+        "Two quoters on the same prints: **join best** (the naive control, centred on Polymarket's own "
+        "mid) and **fair value** (Binance-implied P(Up) "
+        f"± {sim.get('fair_value_half_spread', 0.02) * 100:.0f}¢, never crossing the book). `settle` marks "
+        "fills out against the outcome, from Binance's price at the window end (a proxy where the market "
+        "settles on Chainlink). A breaker that only helps the join-best quoter is switching off a bad "
+        "quoter, not detecting toxicity.",
+        "",
     ]
     for sym, res in sim["symbols"].items():
         lag = res["latency_budget"]["stream_arrival_lag_ms"]
         dec = res["latency_budget"]["evaluator_decision_us"]
+        fv = res.get("fair_value")
+        horizons = list(res.get("static_by_markout", {}))
         lines += [
-            f"**{sym}**: {res['fills']} fills. Latency budget: stream arrival lag p50 "
+            f"**{sym}**: latency budget: stream arrival lag p50 "
             f"{_num(lag.get('p50'), ',.0f')} ms / p99 {_num(lag.get('p99'), ',.0f')} ms; evaluator p50 "
             f"{_num(dec.get('p50'))} µs / p99 {_num(dec.get('p99'))} µs; "
             "OMS cancel assumed (see sensitivity).",
             "",
             *_header(
-                "Trigger",
-                "active",
-                "fills avoided",
-                "slippage avoided",
-                "spread missed",
-                "net value",
-                "placebo net p50",
-                "placebo ≥ actual",
+                "Quoter", "fills", *(f"static P&L, {h}" + ("" if h == "settle" else " s") for h in horizons)
             ),
+            _row("join best", str(res["fills"]), *(_usd(res["static_by_markout"][h]) for h in horizons)),
         ]
-        for name, r in res["triggers"].items():
-            a = r["actual"]
+        if fv:
             lines.append(
                 _row(
-                    name,
-                    _pct(r["active_share"]),
-                    f"{a['fills_avoided']:.0f}/{a['fills']:.0f}",
-                    _usd(a["slippage_avoided"]),
-                    _usd(a["spread_missed"]),
-                    _usd(a["net_value"]),
-                    f"${_num(r['placebo_net_value'].get('p50'))}",
-                    _pct(r["placebo_share_at_least_as_good"], 0),
+                    "fair value",
+                    str(fv["fills"]),
+                    *(_usd(fv["static_by_markout"].get(h, 0.0)) for h in horizons),
                 )
             )
-        composite = res["triggers"].get("composite")
-        if composite:
-            sens = ", ".join(
-                f"{k} ms: ${v['net_value']:,.2f}" for k, v in composite["by_cancel_latency_ms"].items()
-            )
-            lines += ["", f"Composite net value by OMS cancel latency: {sens}."]
+        lines += ["", "*Breaker on the join-best quoter:*", "", *_trigger_table(res)]
+        if fv:
+            lines += ["", "*Breaker on the fair-value quoter:*", "", *_trigger_table(fv)]
         lines.append("")
     return lines
 

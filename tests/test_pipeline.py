@@ -40,7 +40,7 @@ def _capture(root: Path) -> None:
             "sym": "BTCUSDT",
             "kind": "updown_15m",
             "tokens": ["up", "down"],
-            "start": START / 1000,
+            "start": START / 1000 + 1,  # after the first Binance trade, so the opening price is known
             "end": end / 1000 + 600,
         },
     )
@@ -192,9 +192,13 @@ def test_pipeline_end_to_end(tmp_path: Path) -> None:
     obt_sim = results["simulation"]["symbols"]["BTCUSDT"]["triggers"]["obt"]
     assert obt_sim["actual"]["slippage_avoided"] > 0 and obt_sim["placebo_share_at_least_as_good"] < 0.2
     assert "composite" in results["simulation"]["symbols"]["BTCUSDT"]["triggers"]
+    fair = results["simulation"]["symbols"]["BTCUSDT"]["fair_value"]
+    assert fair["fills"] > 0 and "obt" in fair["triggers"]
+    assert set(fair["static_by_markout"]) == {"5", "30", "60", "settle"}
 
     report = render(results, render_all(ds, results, tmp_path / "assets", "BTCUSDT"))
     assert "INSUFFICIENT" in report and "## H1" in report
+    assert "Breaker on the fair-value quoter" in report
     assert sorted(p.name for p in (tmp_path / "assets").glob("*.png")) == [
         "leadlag_cdf.png",
         "obt_distribution.png",

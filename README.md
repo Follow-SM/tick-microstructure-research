@@ -28,8 +28,8 @@ One lesson for anyone joining Polymarket history to other data: CLOB `prices-his
 
 ### What the finished work changes for the crypto track
 
-- **The simulator's fair value is the weak point.** It quotes around the Polymarket mid. In the equity backtest that was the losing baseline (−$46.5k against +$6.2k for quoting around the perp's fair value), so a breaker scored on top of it can look useful only because the quoter is bad. **Planned:** a quoter centred on a Binance-implied fair value, with the mid-centred maker kept as the naive control.
-- **The latency sweep stops too early.** The equity edge was the same at 250 ms and 1 s, 22% lower at 5 s and a loss at 60 s. **Planned:** extend the cancel-latency sweep from 1 s to 5–60 s.
+- **The simulator now runs two quoters.** Quoting around the Polymarket mid was the losing baseline in the equity backtest (−$46.5k against +$6.2k for quoting around the perp's fair value), so a breaker scored only on top of it could look useful because the quoter is bad. The mid-centred maker stays as the naive control; a second quoter centres on a Binance-implied fair value (`simulation/fair_value.py`), and every breaker is scored on both.
+- **The latency sweep now reaches 60 s.** The equity edge was the same at 250 ms and 1 s, 22% lower at 5 s and a loss at 60 s, so the cancel-latency sweep runs 0 ms → 60 s.
 - **Expect the triggers to struggle.** VPIN showed no timing value in the 1-minute hedger backtest or against the opening gap, the toxicity breaker was nearly neutral in the equity market-making backtest, and whale sweeps didn't beat placebos. The H3 public-data baseline and the placebo comparisons are the bar to clear.
 
 > Every number in a report is generated from data. The live-capture report states **INSUFFICIENT** until at least 14 days of clean capture exist, and it never recommends a threshold before then.
@@ -97,13 +97,15 @@ So FollowSM provides the **signals**, and the venues provide the **outcomes**. T
 - *Placebo:* the same intervals, circularly shifted.
 
 **Simulation.**
-- *Setup:* a maker joins the best bid and best ask on every tracked Polymarket Up/Down token. Recorded Polymarket trades at or through the quote fill it, and each fill is marked out 5, 30 and 60 s later.
+- *Setup:* two makers on every tracked Polymarket Up/Down token, filled by the same recorded trades (at or through the quote), each fill marked out 5, 30 and 60 s later and at settlement:
+  - **join best** (naive control): joins the best bid and best ask, i.e. quotes around Polymarket's own mid;
+  - **fair value**: quotes a Binance-implied P(Up) ± 2¢, computed 250 ms before each print and never crossing the recorded book. P(Up) = Φ((ln(S/K) − σ²/2)/σ), with S the last Binance trade, K the Binance price at the window start, and σ from the trailing 30 minutes of 1-second returns scaled to the time left. No fair value (no quote) without a trade in the last 10 s.
 - *Breaker:* quotes are pulled while a trigger is active. The whole window is shifted by the **latency budget**, stream arrival → evaluator decision → OMS cancel:
   - arrival lag is measured;
   - evaluator latency is measured in-process;
-  - OMS latency is a parameter swept from 0 to 1,000 ms, because no live orders are placed. (Planned: up to 60 s, see above.)
+  - OMS latency is a parameter swept from 0 ms to 60 s, because no live orders are placed.
 - *Result:* slippage avoided, spread capture missed, and net value, against the placebo distribution.
-- *Limits:* the model is deliberately simple and says so. Queue position is ignored (fills are an upper bound), and the Polymarket mid stands in for fair value. The equity study showed that a mid-centred maker loses to informed takers, so treat breaker results from this simulator as relative to a weak quoter until the fair-value quoter lands.
+- *Limits:* the model is deliberately simple and says so. Queue position is ignored (fills are an upper bound). The settlement markout uses Binance's price at the window end, a proxy where a market settles on Chainlink. A breaker that only helps the join-best quoter is switching off a bad quoter, not detecting toxicity; the report shows both.
 
 ## Quickstart
 
