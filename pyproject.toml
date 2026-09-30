@@ -33,7 +33,7 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
-allowed-confusables = ["σ", "Δ", "−", "·", "±"]
+allowed-confusables = ["σ", "Δ", "−", "·", "±", "ρ"]
 
 [tool.mypy]
 strict = true

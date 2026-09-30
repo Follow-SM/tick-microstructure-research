@@ -322,3 +322,116 @@ def render(results: dict[str, Any], charts: list[str]) -> str:
         "",
     ]
     return "\n".join(lines)
+
+
+def _bps(x: float | None) -> str:
+    return "n/a" if x is None else f"{x:,.1f} bps"
+
+
+def _test(r: dict[str, Any]) -> str:
+    if r.get("rho") is None:
+        return f"n/a (n={r.get('n', 0)})"
+    return f"ρ {r['rho']:+.3f}, p={r['p']:.3f} (n={r['n']})"
+
+
+def render_tradfi(results: dict[str, Any], charts: list[str]) -> str:
+    """Markdown report for `tmr tradfi analyze`, numbers copied from results_tradfi.json."""
+    generated = datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")
+    syms = results["symbols"]
+    sessions = ("rth", "pre", "post", "overnight", "closed")
+    lines = [
+        "# Tokenized equities vs 24/7 crypto: session microstructure and gap risk",
+        "",
+        f"*Generated {generated} from `research/results_tradfi.json`.*",
+        "",
+        "## 1. Where the volume trades",
+        "",
+        *_header("symbol", "period", *(f"{s} volume" for s in sessions)),
+    ]
+    for sym, r in syms.items():
+        st = r["structure"]
+        lines.append(_row(sym, " to ".join(r["period"]), *(_pct(st[s]["share_of_volume"]) for s in sessions)))
+    lines += ["", "## 2. VPIN by session: global V (ADV/50) vs session-aware V", ""]
+    lines += _header("symbol", "mode", *(f"{s}: median / time ≥ p95" for s in sessions))
+    for sym, r in syms.items():
+        for mode, per in r["vpin"].items():
+            cells = [
+                f"{_num(per[s]['median_vpin'], '.3f')} / {_pct(per[s]['share_pctl_ge_095'])}"
+                for s in sessions
+            ]
+            lines.append(_row(sym, mode, *cells))
+    lines += ["", "### Volume z-score at the open (09:30-09:45 ET minutes with z ≥ 6)", ""]
+    lines += _header("symbol", "naive z (vs previous 24 h)", "session z (same slot, similar days)")
+    for sym, r in syms.items():
+        fs = r["false_sweeps_0930_0945"]
+        lines.append(_row(sym, _ci(fs["naive"]), _ci(fs["session"])))
+    lines += ["", "## 3. Book depth before the open", ""]
+    lines += _header(
+        "symbol", "days", "±1% depth 09:15-09:29 vs 08:00-09:00", "days thinner", "10:00-12:30 vs 08:00-09:00"
+    )
+    for sym, d in results["depth_preopen"].items():
+        if sym == "top_decile_gap_days":
+            continue
+        lines.append(
+            _row(
+                sym,
+                str(d["days"]),
+                _num(d["median_preopen_vs_0800"], ".2f"),
+                _pct(d["share_days_thinner"]),
+                _num(d["median_rth_1000_1230_vs_0800"], ".2f"),
+            )
+        )
+    top = results["depth_preopen"].get("top_decile_gap_days")
+    if top:
+        lines += [
+            "",
+            f"Top-decile gap days (|gap| ≥ {top['gap_cut_bps']:.0f} bps): pre-open depth ratio "
+            f"{top['median_ratio_top_decile']:.2f} vs {top['median_ratio_rest']:.2f} on other days.",
+        ]
+    pooled = results["pooled_gap"]
+    pd = pooled["price_discovery"]
+    lines += [
+        "",
+        "## 4. The opening gap: what the perp priced before the bell",
+        "",
+        f"{pooled['n_opens']} opens ({pooled['n_after_weekend_or_holiday']} after a weekend or holiday). "
+        f"Median |gap| {_bps(pooled['abs_gap_bps'].get('p50'))}; median |part not priced by 09:29| "
+        f"{_bps(pooled['abs_residual_bps'].get('p50'))}; median |perp basis at the prior close| "
+        f"{_bps(pooled['abs_basis_at_close_bps'].get('p50'))}.",
+        "",
+        *_header("regression of gap on", "n", "slope", "R²"),
+    ]
+    for name in ("perp", "index", "perp_after_overnight", "perp_after_weekend_or_holiday"):
+        o = pd[name]
+        lines.append(_row(name, str(o.get("n", 0)), _num(o.get("slope"), ".3f"), _num(o.get("r2"), ".3f")))
+    lines += ["", f"Perp move has the gap's sign (|gap| ≥ 10 bps): {_ci(pd['perp_sign_matches_gap'])}", ""]
+    lines += _header("off-hours signal", "target", "direction hit rate", "rank correlation")
+    for name, per in pooled["direction"].items():
+        for target, r in per.items():
+            lines.append(_row(name, target, _ci(r), _test(r)))
+    lines += ["", *_header("magnitude signal", "|gap|", "|residual|", "15-min post-open vol")]
+    for name, per in pooled["magnitude"].items():
+        lines.append(
+            _row(name, _test(per["abs_gap"]), _test(per["abs_residual"]), _test(per["post_open_vol"]))
+        )
+    lines += ["", "## 5. Lead-lag (1-minute returns; positive lag = perp moves first)", ""]
+    lines += _header("symbol", "vs", "session", "peak lag (min)", "corr at peak", "corr at 0")
+    for sym, r in syms.items():
+        for venue, per in r.get("leadlag", {}).items():
+            for s, o in per.items():
+                if o.get("peak_lag_min") is None:
+                    continue
+                lines.append(
+                    _row(
+                        sym,
+                        venue,
+                        s,
+                        str(o["peak_lag_min"]),
+                        _num(o["peak_corr"], ".3f"),
+                        _num(o["corr_at_0"], ".3f"),
+                    )
+                )
+    if charts:
+        lines += ["", "## Charts", "", *(f"![{c}](assets/{c})" for c in charts)]
+    lines += ["", "## Assumptions", "", *(f"- {a}" for a in results["assumptions"]), ""]
+    return "\n".join(lines)

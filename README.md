@@ -161,6 +161,25 @@ Restarts are safe. The collector appends to the current hour, compresses any hou
 | `TMR_SYMBOLS` | `BTCUSDT,ETHUSDT,SOLUSDT,XRPUSDT` | Binance symbols; the ones with Polymarket Up/Down markets get cross-venue tests |
 | `TMR_DATA_DIR` / `TMR_RESULTS_DIR` / `TMR_OUTREACH_DIR` | `data` / `results` / `outreach` | Output locations |
 
+## TradFi extension: tokenized equities vs US sessions
+
+The same questions, asked of **equity perps that trade 24/7 while their underlying doesn't**. Binance lists TSLA, NVDA, AAPL, SPY, QQQ and others as `TRADIFI_PERPETUAL` USDⓈ-M contracts, and publishes their full tick tape and 30-second ±0.2/1/2/3/4/5% depth history. So, unlike the crypto backtest, the book signals can be tested historically.
+
+```bash
+pip install -e ".[dev,parquet]"
+tmr tradfi fetch      # data.binance.vision archives (SHA-256 checked) + Yahoo bars -> data/tradfi/*.parquet
+tmr tradfi analyze    # research/results_tradfi.json, research/TRADFI_REPORT.md, research/assets/tradfi_*.png
+```
+
+| Module | What it does |
+|---|---|
+| `research/utils/session.py` | NYSE calendar on `America/New_York`: RTH, pre, post, overnight, and closed (weekends and holidays), with DST handled and early closes included. Checked against the days Yahoo printed a bar. |
+| `research/data/` | Checksummed ingestion into daily Parquet partitions (`aggTrades`, `bookDepth`), plus 1m perp and index klines, funding, and Yahoo daily and 1m bars. Yahoo keeps 1m data for only 30 days, so each run merges into the stored file. |
+| `research/tradfi.py` | Vectorized minute features, cached as Parquet: VPIN with a **global** bucket (ADV/50) and a **session-aware** bucket; trailing percentiles; NATR; naive and session-slot volume z-scores; ±1% depth; and the per-symbol book-imbalance percentile. |
+| `research/tradfi_study.py` | Session structure, VPIN inflation by session, false "sweeps" at the open, pre-open depth thinning, the tape spread, opening-gap price discovery, off-hours signal tests (permutation p-values, Wilson intervals), and lead-lag against the index and Yahoo pre-market. |
+
+The hedging side of the question lives in [dynamic-inventory-hedger `research/backtest_tradfi.py`](https://github.com/Follow-SM/dynamic-inventory-hedger/tree/main/research). It imports this package's loaders, session calendar and features.
+
 ## Development
 
 ```bash
