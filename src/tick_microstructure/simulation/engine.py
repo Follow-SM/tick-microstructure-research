@@ -11,8 +11,8 @@ Maker models (deliberately simple, stated so results can be judged), run on the 
     bid fills our bid, taker BUY at >= our ask fills our ask), for min(quote size, trade size);
     queue position is ignored, so fill counts are an upper bound;
   * markout of a fill = (mid H later - fill price) for a maker buy, (fill price - mid H later)
-    for a maker sell, in USD per share; `settle` marks out against the market's outcome, taken from
-    Binance's price at the window end (a proxy where the market settles on Chainlink).
+    for a maker sell, in USD per share; `settle` marks out against Polymarket's own resolution of
+    the market (a Chainlink TWAP vs the window's opening price); unresolved markets are left out.
 Breaker: quotes are pulled while a trigger interval is active. The whole window is shifted by the
     latency budget (trigger receive time + decision latency + OMS latency): cancels land that late,
     and re-quotes after the trigger clears go out that late too. A fill is avoided if it printed
@@ -80,9 +80,7 @@ def collect_fills(ds: Dataset, sym: str, quoter: str = "join_best") -> Fills:
         if market.sym != sym or not market.kind.startswith("updown"):
             continue
         start, end = market.start, market.end
-        up_outcome = (
-            fv.settle_up(start, end) if fv is not None and start is not None and end is not None else math.nan
-        )
+        up_outcome = ds.resolutions.get(market.slug, math.nan)
         for outcome, tok in enumerate(market.tokens):
             q, tr = ds.quotes.get(tok), ds.pm_trades.get(tok)
             if q is None or tr is None or q.t.size < 2 or tr.t.size == 0:
@@ -239,6 +237,28 @@ def _evaluate(
     return out
 
 
+def settlement_check(ds: Dataset) -> dict[str, Any]:
+    """Per symbol: Up/Down markets resolved by Polymarket, and how often Binance's own window
+    (last trade at the end vs at the start) disagreed with that resolution."""
+    out: dict[str, Any] = {}
+    fvs = {sym: FairValue(tr) for sym, tr in ds.trades.items() if tr.t.size}
+    for market in ds.markets.values():
+        fv = fvs.get(market.sym)
+        real = ds.resolutions.get(market.slug)
+        if fv is None or real is None or market.start is None or market.end is None:
+            continue
+        proxy = fv.settle_up(market.start, market.end)
+        row = out.setdefault(market.sym, {"resolved": 0, "compared": 0, "binance_disagrees": 0})
+        row["resolved"] += 1
+        if math.isfinite(proxy):
+            row["compared"] += 1
+            row["binance_disagrees"] += int(proxy != real)
+    for row in out.values():
+        compared = row["compared"]
+        row["binance_disagree_share"] = row["binance_disagrees"] / compared if compared else None
+    return out
+
+
 def simulate(
     ds: Dataset, spec: TriggerSpec | None = None, seed: int = 23, placebo_shifts: int = PLACEBO_SHIFTS
 ) -> dict[str, Any]:
@@ -251,6 +271,7 @@ def simulate(
         "primary_markout_s": PRIMARY_MARKOUT_S,
         "fair_value_half_spread": FV_HALF_SPREAD,
         "fair_value_quote_latency_ms": FV_QUOTE_LATENCY_MS,
+        "settlement": settlement_check(ds),
         "symbols": {},
     }
     for sym in sorted({m.sym for m in ds.markets.values()}):

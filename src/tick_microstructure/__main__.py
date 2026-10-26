@@ -17,6 +17,7 @@ import numpy as np
 from tick_microstructure.analytics.calibration import calibrate
 from tick_microstructure.analytics.data import find_book_model_switch, load
 from tick_microstructure.analytics.leadlag import lead_lag
+from tick_microstructure.analytics.resolutions import load_resolutions
 from tick_microstructure.collector.common import FatalStreamError
 from tick_microstructure.collector.export import export_parquet
 from tick_microstructure.collector.run import collect
@@ -56,7 +57,19 @@ def analyze(hours: float | None, chart_symbol: str, book_model: str = "auto") ->
         raise SystemExit("No frames from the local-order-book backend in this capture yet.")
     t0 = time.monotonic()
     ds = load(settings.data_dir, start, end)
-    log.info("Loaded %.2f h in %.1fs", ds.hours, time.monotonic() - t0)
+    updown = [
+        m.slug
+        for m in ds.markets.values()
+        if m.kind.startswith("updown") and m.end and m.end * 1000 < ds.end_ms
+    ]
+    ds.resolutions = load_resolutions(settings.data_dir, updown)
+    log.info(
+        "Loaded %.2f h in %.1fs (%d/%d markets resolved)",
+        ds.hours,
+        time.monotonic() - t0,
+        len(ds.resolutions),
+        len(updown),
+    )
     mixed = switch is not None and ds.start_ms < switch < ds.end_ms
     results = {
         "book_model": {"switch_ms": switch, "mode": book_model, "mixed": mixed},

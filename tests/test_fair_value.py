@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 
 from tick_microstructure.analytics.data import (
@@ -12,7 +14,8 @@ from tick_microstructure.analytics.data import (
     Quotes,
     Trades,
 )
-from tick_microstructure.simulation.engine import PRIMARY_MARKOUT_S, collect_fills
+from tick_microstructure.analytics.resolutions import CACHE_NAME, load_resolutions
+from tick_microstructure.simulation.engine import PRIMARY_MARKOUT_S, collect_fills, settlement_check
 from tick_microstructure.simulation.fair_value import VOL_WINDOW_S, FairValue
 
 T0 = 1_800_000_000_000.0
@@ -80,6 +83,7 @@ def _dataset() -> Dataset:
         markets={market.slug: market},
         gaps={k: GapMask() for k in ("followsm", "binance", "polymarket", "all")},
         event_counts={},
+        resolutions={market.slug: 1.0},
     )
 
 
@@ -97,3 +101,20 @@ def test_fair_value_quoter_is_not_picked_off_by_a_stale_book() -> None:
     assert pnl(fair.settle, fair.size) > 0 > pnl(naive.settle, naive.size)
     lag = (naive.t_server >= JUMP) & (naive.t_server < REPRICE)
     assert lag.any() and not ((fair.t_server >= JUMP) & (fair.t_server < REPRICE)).any()
+
+
+def test_settle_uses_polymarkets_resolution_not_binance() -> None:
+    ds = _dataset()
+    ds.resolutions = {"btc-updown-15m-x": 0.0}  # Chainlink said Down although Binance closed higher
+    fair = collect_fills(ds, "BTCUSDT", "fair_value")
+    assert float(np.nansum(fair.settle * fair.size)) < 0
+    assert settlement_check(ds)["BTCUSDT"] == {
+        "resolved": 1, "compared": 1, "binance_disagrees": 1, "binance_disagree_share": 1.0,
+    }
+    ds.resolutions = {}
+    assert np.isnan(collect_fills(ds, "BTCUSDT", "fair_value").settle).all()
+
+
+def test_resolution_cache_is_read_offline(tmp_path: Path) -> None:
+    (tmp_path / CACHE_NAME).write_text('{"slug": "a", "up": 1.0}\n{"slug": "b", "up": 0.0}\n')
+    assert load_resolutions(tmp_path, ["a", "b", "c"], fetch=False) == {"a": 1.0, "b": 0.0}

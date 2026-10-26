@@ -8,6 +8,7 @@ the Binance book (local clock), cross-venue lead-lag on exchange clocks.
 from __future__ import annotations
 
 import bisect
+from array import array
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,29 +26,24 @@ def _arr(values: list[float]) -> F:
 
 
 class _Columns:
-    """Row-wise float accumulator flushed to numpy chunks, so multi-week loads stay compact."""
+    """Row-wise float accumulator in a typed buffer (8 bytes per value, no Python objects).
 
-    CHUNK = 100_000
+    Thousands of short-lived Polymarket tokens each hold only a few thousand rows, so per-token
+    buffers of Python tuples cost ~5x the numpy size and ran a two-week load out of memory.
+    """
 
     def __init__(self, width: int) -> None:
-        self._rows: list[tuple[float, ...]] = []
-        self._chunks: list[F] = []
+        self._buf = array("d")
         self.width = width
 
     def add(self, *values: float) -> None:
-        self._rows.append(values)
-        if len(self._rows) >= self.CHUNK:
-            self._flush()
-
-    def _flush(self) -> None:
-        if self._rows:
-            self._chunks.append(np.asarray(self._rows, dtype=np.float64).reshape(-1, self.width))
-            self._rows = []
+        self._buf.extend(values)
 
     def arrays(self) -> list[F]:
-        self._flush()
-        block = np.concatenate(self._chunks) if self._chunks else np.empty((0, self.width))
-        return [np.ascontiguousarray(block[:, k]) for k in range(self.width)]
+        block = np.frombuffer(self._buf, dtype=np.float64).reshape(-1, self.width)
+        cols = [block[:, k].copy() for k in range(self.width)]
+        self._buf = array("d")
+        return cols
 
 
 def _sorted_by(t: F, *cols: F) -> tuple[F, ...]:
@@ -213,6 +209,8 @@ class Dataset:
     # Receive time of the first frame from the local-order-book backend. Depth metrics mean
     # something different before it (top 10 levels), so analyses must not mix the two.
     book_model_switch_ms: float | None = None
+    # Polymarket's own resolution per Up/Down market slug: 1.0 Up, 0.0 Down (analytics/resolutions.py).
+    resolutions: dict[str, float] = field(default_factory=dict)
 
     def token_market(self) -> dict[str, tuple[MarketInfo, int]]:
         """token id -> (market, outcome index) with index 0 = YES / Up."""

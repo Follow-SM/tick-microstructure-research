@@ -124,7 +124,7 @@ def iter_records(
     root: Path, stream: str, start_ms: float | None = None, end_ms: float | None = None
 ) -> Iterator[dict[str, Any]]:
     """Records of one stream in file (hour) order, filtered on receive time `rt`."""
-    hours = sorted({(p.parent, p.name.split(".")[0]) for p in (root / stream).glob("*/*.jsonl*")})
+    hours = sorted({(p.parent, p.name.split(".")[0]) for p in (root / stream).glob("*/[0-9][0-9].jsonl*")})
     for folder, hour in hours:
         hour_start = calendar.timegm(time.strptime(folder.name + hour, "%Y%m%d%H"))
         if end_ms is not None and hour_start * 1000 >= end_ms:

@@ -285,11 +285,23 @@ def _sim(sim: dict[str, Any]) -> list[str]:
         "Two quoters on the same prints: **join best** (the naive control, centred on Polymarket's own "
         "mid) and **fair value** (Binance-implied P(Up) "
         f"± {sim.get('fair_value_half_spread', 0.02) * 100:.0f}¢, never crossing the book). `settle` marks "
-        "fills out against the outcome, from Binance's price at the window end (a proxy where the market "
-        "settles on Chainlink). A breaker that only helps the join-best quoter is switching off a bad "
-        "quoter, not detecting toxicity.",
+        "fills out against Polymarket's own resolution of each market (a Chainlink TWAP against the "
+        "window's opening price); markets without a resolution are left out. A breaker that only helps "
+        "the join-best quoter is switching off a bad quoter, not detecting toxicity.",
         "",
     ]
+    checks = sim.get("settlement", {})
+    if checks:
+        lines += [
+            "Binance's own window (last trade at the end vs at the start) against Polymarket's resolution:",
+            "",
+            *_header("Symbol", "resolved markets", "compared", "Binance disagrees"),
+            *(
+                _row(s, str(c["resolved"]), str(c["compared"]), _pct(c["binance_disagree_share"]))
+                for s, c in sorted(checks.items())
+            ),
+            "",
+        ]
     for sym, res in sim["symbols"].items():
         lag = res["latency_budget"]["stream_arrival_lag_ms"]
         dec = res["latency_budget"]["evaluator_decision_us"]
