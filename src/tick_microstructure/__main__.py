@@ -1,4 +1,4 @@
-"""CLI: `tmr collect | analyze | export | tradfi fetch | analyze | pm-fetch | pm-analyze`."""
+"""CLI: `tmr collect | analyze | export | tradfi ... | crossasset fetch|analyze`."""
 
 from __future__ import annotations
 
@@ -23,10 +23,11 @@ from tick_microstructure.collector.export import export_parquet
 from tick_microstructure.collector.run import collect
 from tick_microstructure.config import load_settings
 from tick_microstructure.outreach.charts import render_all
+from tick_microstructure.outreach.crossasset_charts import render_crossasset_charts
 from tick_microstructure.outreach.polymarket_charts import render_polymarket_charts
 from tick_microstructure.outreach.report import render, render_polymarket, render_tradfi
 from tick_microstructure.outreach.tradfi_charts import render_tradfi_charts
-from tick_microstructure.research import polymarket_study, tradfi_study
+from tick_microstructure.research import crossasset_study, polymarket_study, tradfi_study
 from tick_microstructure.research.data.fetch import EQUITY_SYMBOLS, fetch_all
 from tick_microstructure.research.data.polymarket import fetch_polymarket
 from tick_microstructure.research.data.store import TradfiStore
@@ -116,6 +117,16 @@ def analyze_polymarket(store: TradfiStore, symbols: tuple[str, ...], out: Path) 
     return report
 
 
+def analyze_crossasset(store: TradfiStore, start: date, end: date, out: Path) -> Path:
+    results, chart_data = crossasset_study.run(store, start, end)
+    out.mkdir(parents=True, exist_ok=True)
+    path = out / "results_crossasset.json"
+    path.write_text(json.dumps(results, indent=1, default=_json_default))
+    charts = render_crossasset_charts(results, chart_data, out / "assets")
+    log.info("Wrote %s and %d charts", path, len(charts))
+    return path
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(prog="tmr", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -143,6 +154,14 @@ def main() -> None:
     t.add_argument(
         "--out", type=Path, default=Path("research"), help="results, report and assets/ (committed)"
     )
+    x = sub.add_parser("crossasset", help="BTC/ETH vs equity and commodity perps (historical, Parquet)")
+    x.add_argument("action", choices=("fetch", "analyze"))
+    x.add_argument(
+        "--root", type=Path, default=None, help="Parquet root (default: <TMR_DATA_DIR>/crossasset)"
+    )
+    x.add_argument("--start", type=date.fromisoformat, default=date(2026, 4, 21))
+    x.add_argument("--end", type=date.fromisoformat, default=date(2026, 11, 7))
+    x.add_argument("--out", type=Path, default=Path("research"))
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s | %(message)s")
@@ -171,6 +190,13 @@ def main() -> None:
             analyze_polymarket(store, symbols, args.out)
         else:
             analyze_tradfi(store, symbols, args.out)
+    elif args.cmd == "crossasset":
+        store = TradfiStore(args.root or load_settings().data_dir / "crossasset")
+        if args.action == "fetch":
+            report = asyncio.run(crossasset_study.fetch(store, args.start, args.end))
+            log.info("Downloaded: %s; missing: %s", report.downloaded, report.missing)
+        else:
+            analyze_crossasset(store, args.start, args.end, args.out)
     else:
         written = export_parquet(load_settings().data_dir, args.out)
         log.info("Parquet: %s", written)
